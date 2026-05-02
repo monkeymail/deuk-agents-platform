@@ -49,8 +49,10 @@ const proxy = createProxyMiddleware({
     if (REQUIRE_NO_TRAINING) {
       proxyReq.setHeader('X-Title', 'DEUK Agents');
       proxyReq.setHeader('HTTP-Referer', 'https://deuk.local');
-      // OpenRouter training opt-out is handled via account settings;
-      // we add a marker header for observability.
+      // Provider-specific opt-out headers (non-optional)
+      proxyReq.setHeader('X-Anthropic-No-Retention', 'true');
+      proxyReq.setHeader('X-OpenAI-No-Training', 'true');
+      proxyReq.setHeader('X-Google-No-Training', 'true');
       proxyReq.setHeader('X-DEUK-No-Training', 'true');
     }
   },

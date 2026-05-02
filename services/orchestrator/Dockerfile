@@ -8,14 +8,19 @@ RUN apk add --no-cache python3 make g++
 
 # Install dependencies
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install && npm cache clean --force
 
 # Copy source
 COPY src/ ./src/
 COPY config/ ./config/
 
-# Create non-root user
-RUN addgroup -g 1000 agent && adduser -u 1000 -G agent -s /bin/sh -D agent
+# Create non-root user and data dir
+RUN addgroup -g 1001 agent && adduser -u 1001 -G agent -s /bin/sh -D agent
+RUN mkdir -p /data && chown -R agent:agent /data
+
+# Install wget for healthcheck
+RUN apk add --no-cache wget
+
 USER agent
 
 # Health check

@@ -1,0 +1,19 @@
+{
+  "name": "@deuk/agentctl",
+  "version": "0.1.0",
+  "description": "DEUK agentctl — operator CLI for the agent platform",
+  "type": "module",
+  "bin": {
+    "agentctl": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "dev": "node --watch src/cli.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

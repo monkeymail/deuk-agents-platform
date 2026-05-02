@@ -28,7 +28,7 @@ services:
       - GATEWAY_URL=http://gateway:7100
       - AWS_REGION=eu-west-1
       - AWS_DEFAULT_REGION=eu-west-1
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:?err}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - DAILY_BUDGET_USD=${DAILY_BUDGET_USD:-6.67}
       - MONTHLY_BUDGET_USD=${MONTHLY_BUDGET_USD:-200}
       - HARD_BUDGET_USD=${HARD_BUDGET_USD:-300}
@@ -36,6 +36,7 @@ services:
     volumes:
       - orchestrator-data:/data
       - ./services/orchestrator/config:/config:ro
+      - /run/user/1000/docker.sock:/var/run/docker.sock:ro
     ports:
       - "7001:7001"
     networks:
@@ -65,7 +66,7 @@ services:
       - /tmp:noexec,nosuid,size=50m
     environment:
       - DEUK_ENV=${DEUK_ENV:-local}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:?err}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - GATEWAY_PORT=7100
       - REQUIRE_NO_TRAINING_HEADERS=true
       - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3.5-sonnet}
@@ -91,7 +92,6 @@ services:
       dockerfile: Dockerfile
     container_name: deuk-dashboard
     restart: unless-stopped
-    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -112,6 +112,29 @@ services:
     depends_on:
       orchestrator:
         condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────
+  # agentctl — operator CLI (runs on demand, not a daemon)
+  # ─────────────────────────────────────────────────────────────
+  agentctl:
+    build:
+      context: ./services/agentctl
+      dockerfile: Dockerfile
+    container_name: deuk-agentctl
+    profiles: ["cli"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=20m
+    environment:
+      - ORCHESTRATOR_URL=http://orchestrator:7001
+    networks:
+      - deuk-internal
+    depends_on:
+      - orchestrator
 
   # ─────────────────────────────────────────────────────────────
   # Audit Shipper — jsonl → S3 (or local fs in dev)
@@ -172,10 +195,6 @@ services:
     image: postgres:16-alpine
     container_name: deuk-postgres
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     environment:
       POSTGRES_USER: deuk
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deuk-local-dev}
@@ -199,13 +218,6 @@ services:
     image: redis:7-alpine
     container_name: deuk-redis
     restart: unless-stopped
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    tmpfs:
-      - /tmp:noexec,nosuid,size=50m
     volumes:
       - redis-data:/data
     networks:
@@ -288,7 +300,7 @@ services:
       - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,linux,x64,sandbox}
       - GH_ORG=${GH_ORG:-deuk-agents}
       - GH_REPO=${GH_REPO:-platform}
-      - GH_TOKEN=${GH_TOKEN:?err}
+      - GH_TOKEN=${GH_TOKEN:-}
       - EPHEMERAL=true
     networks:
       - deuk-internal

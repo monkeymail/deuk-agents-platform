@@ -4,11 +4,13 @@ FROM node:22-alpine
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install && npm cache clean --force
 
 COPY src/ ./src/
 
-RUN addgroup -g 1000 agent && adduser -u 1000 -G agent -s /bin/sh -D agent
+RUN apk add --no-cache wget
+
+RUN addgroup -g 1001 agent && adduser -u 1001 -G agent -s /bin/sh -D agent
 USER agent
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
