@@ -1,23 +1,26 @@
 /**
- * DEUK Audit Shipper — Minimal bootstrap version
- * Watches /data/audit for .jsonl files and ships to S3 (or keeps local).
+ * DEUK Audit Shipper — Watches /data/audit for .jsonl files and ships to S3 (or keeps local).
+ * Uses centralized @deuk/config for all configuration.
  */
 import { readFile, readdir, unlink } from 'fs/promises';
 import { join } from 'path';
+import { parseConfig } from '@deuk/config';
+
+const cfg = parseConfig(process.env);
 
 const SINK_TYPE = process.env.SINK_TYPE || 'local';
-const S3_BUCKET = process.env.S3_BUCKET || 'deuk-audit-local';
+const S3_BUCKET = cfg.S3_AUDIT_BUCKET;
 const LOCAL_DIR = process.env.LOCAL_SINK_DIR || '/data/audit';
-const AWS_REGION = process.env.AWS_REGION || 'eu-west-1';
+const AWS_REGION = cfg.AWS_REGION;
 
 async function shipLocal(filePath) {
-  // In local mode we just keep the file; in a real implementation we'd
-  // batch and upload to S3 using @aws-sdk/client-s3.
   console.log(JSON.stringify({
     ts: new Date().toISOString(),
     svc: 'audit-shipper',
     event: 'ship.local',
     file: filePath,
+    bucket: S3_BUCKET,
+    region: AWS_REGION,
   }));
 }
 
@@ -45,4 +48,4 @@ async function processBatch() {
 setInterval(processBatch, 30_000);
 processBatch();
 
-console.log('[audit-shipper] Running. Sink:', SINK_TYPE, 'Dir:', LOCAL_DIR);
+console.log('[audit-shipper] Running. Sink:', SINK_TYPE, 'Dir:', LOCAL_DIR, 'Bucket:', S3_BUCKET, 'Region:', AWS_REGION);

@@ -1,14 +1,13 @@
 {
-  "name": "@deuk/audit-shipper",
+  "name": "@deuk/worker",
   "version": "0.1.0",
-  "description": "DEUK Audit Shipper — structured logs to S3 or local fs",
+  "description": "DEUK Worker — agent that executes tasks in sandbox",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.600.0",
     "zod": "^3.23.8"
   },
   "engines": {

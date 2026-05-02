@@ -1,0 +1,31 @@
+{
+  "name": "@deuk/agents-platform",
+  "version": "0.2.0",
+  "description": "DEUK Agents Platform — Autonomous AI agent platform with Docker Compose-first architecture",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "services/mcp-servers/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down -v",
+    "docker:logs": "docker compose logs -f",
+    "pr:create": "node scripts/pr-create.js",
+    "pr:merge": "node scripts/pr-merge.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

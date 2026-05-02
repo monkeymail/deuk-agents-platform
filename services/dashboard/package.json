@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node src/server.js"
   },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
   "engines": {
     "node": ">=22.0.0"
   }

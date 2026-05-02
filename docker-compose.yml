@@ -11,8 +11,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   orchestrator:
     build:
-      context: ./services/orchestrator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
     container_name: deuk-orchestrator
     restart: unless-stopped
     read_only: true
@@ -53,8 +53,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   gateway:
     build:
-      context: ./services/gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/gateway/Dockerfile
     container_name: deuk-gateway
     restart: unless-stopped
     read_only: true
@@ -69,7 +69,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - GATEWAY_PORT=7100
       - REQUIRE_NO_TRAINING_HEADERS=true
-      - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3.5-sonnet}
+      - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4.1,openai/gpt-4.1-mini,openai/gpt-4.1-nano,openai/gpt-4o,anthropic/claude-sonnet-4-20250514,anthropic/claude-opus-4-20250514,google/gemini-2.5-pro-preview-03-25}
       - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
       - SCRUBBER_PATTERNS=${SCRUBBER_PATTERNS:-credit_card,ssn,api_key}
     ports:
@@ -84,12 +84,35 @@ services:
       start_period: 5s
 
   # ─────────────────────────────────────────────────────────────
+  # Worker — agent sandbox (built but not started by Compose; spawned by orchestrator)
+  # ─────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    image: deuk-agents-worker:latest
+    container_name: deuk-worker-template
+    profiles: ["build-only"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    environment:
+      - GATEWAY_URL=http://gateway:7100
+      - ORCHESTRATOR_URL=http://orchestrator:7001
+    networks:
+      - deuk-internal
+
+  # ─────────────────────────────────────────────────────────────
   # Dashboard — Lustre SPA served by a tiny static server
   # ─────────────────────────────────────────────────────────────
   dashboard:
     build:
-      context: ./services/dashboard
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/dashboard/Dockerfile
     container_name: deuk-dashboard
     restart: unless-stopped
     security_opt:
@@ -118,8 +141,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   agentctl:
     build:
-      context: ./services/agentctl
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/agentctl/Dockerfile
     container_name: deuk-agentctl
     profiles: ["cli"]
     read_only: true
@@ -233,8 +256,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   mcp-fs:
     build:
-      context: ./services/mcp-servers/fs
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/mcp-servers/fs/Dockerfile
     container_name: deuk-mcp-fs
     restart: unless-stopped
     read_only: true
@@ -249,8 +272,8 @@ services:
 
   mcp-git:
     build:
-      context: ./services/mcp-servers/git
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/mcp-servers/git/Dockerfile
     container_name: deuk-mcp-git
     restart: unless-stopped
     read_only: true
@@ -265,8 +288,8 @@ services:
 
   mcp-gleam:
     build:
-      context: ./services/mcp-servers/gleam
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/mcp-servers/gleam/Dockerfile
     container_name: deuk-mcp-gleam
     restart: unless-stopped
     read_only: true

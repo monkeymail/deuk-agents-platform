@@ -1,13 +1,17 @@
 /**
  * DEUK Dashboard — Tiny static file server
  * Serves the SPA and proxies /api to the orchestrator.
+ * Uses centralized @deuk/config for all configuration.
  */
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { parseConfig, DEFAULTS } from '@deuk/config';
 
-const PORT = process.env.DASHBOARD_PORT || 7000;
-const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://orchestrator:7001';
+const cfg = parseConfig(process.env);
+
+const PORT = cfg.DASHBOARD_PORT;
+const ORCHESTRATOR_URL = cfg.ORCHESTRATOR_URL;
 
 const MIME = {
   '.html': 'text/html',
@@ -48,17 +52,17 @@ const server = http.createServer(async (req, res) => {
       // Fallback to index.html for SPA routing
       fs.readFile(path.join(process.cwd(), 'dist', 'index.html'), (err2, data2) => {
         if (err2) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.writeHead(404);
           res.end('Not found');
-        } else {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(data2);
+          return;
         }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(data2);
       });
-    } else {
-      res.writeHead(200, { 'Content-Type': contentType });
-      res.end(data);
+      return;
     }
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(data);
   });
 });
 

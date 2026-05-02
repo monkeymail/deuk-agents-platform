@@ -6,13 +6,18 @@ WORKDIR /app
 # Install build deps for native modules (better-sqlite3)
 RUN apk add --no-cache python3 make g++
 
-# Install dependencies
-COPY package.json package-lock.json* ./
+# Copy and install service dependencies
+COPY services/orchestrator/package.json ./
 RUN npm install && npm cache clean --force
 
-# Copy source
-COPY src/ ./src/
-COPY config/ ./config/
+# Link workspace package
+RUN mkdir -p node_modules/@deuk && ln -s /app/packages/config node_modules/@deuk/config
+
+# Copy built config package and service source
+COPY packages/config/dist ./packages/config/dist
+COPY packages/config/package.json ./packages/config/package.json
+COPY services/orchestrator/src/ ./src/
+COPY services/orchestrator/config/ ./config/
 
 # Create non-root user and data dir
 RUN addgroup -g 1001 agent && adduser -u 1001 -G agent -s /bin/sh -D agent

@@ -3,10 +3,17 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+# Copy and install service dependencies
+COPY services/gateway/package.json ./
 RUN npm install && npm cache clean --force
 
-COPY src/ ./src/
+# Link workspace package
+RUN mkdir -p node_modules/@deuk && ln -s /app/packages/config node_modules/@deuk/config
+
+# Copy built config package and service source
+COPY packages/config/dist ./packages/config/dist
+COPY packages/config/package.json ./packages/config/package.json
+COPY services/gateway/src/ ./src/
 
 RUN apk add --no-cache wget
 
