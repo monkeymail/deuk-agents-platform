@@ -1,0 +1,49 @@
+# Secrets
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local data volumes (if bind-mounted)
+data/
+workspace/
+cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artefacts
+node_modules/
+dist/
+build/
+target/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+
+# Gleam
+build/
+
+# Misc
+*.bak
+*.tmp

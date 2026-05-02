@@ -1,0 +1,10 @@
+{
+  "name": "@deuk/mcp-fs",
+  "version": "0.1.0",
+  "description": "DEUK MCP — Filesystem tools",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": { "zod": "^3.23.8" },
+  "engines": { "node": ">=22.0.0" }
+}

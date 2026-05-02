@@ -1,0 +1,16 @@
+{
+  "name": "@deuk/audit-shipper",
+  "version": "0.1.0",
+  "description": "DEUK Audit Shipper — structured logs to S3 or local fs",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

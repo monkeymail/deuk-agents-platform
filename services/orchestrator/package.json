@@ -1,0 +1,21 @@
+{
+  "name": "@deuk/orchestrator",
+  "version": "0.1.0",
+  "description": "DEUK Agents Orchestrator — task queue, dispatch, state machine",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

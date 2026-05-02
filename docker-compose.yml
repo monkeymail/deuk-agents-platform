@@ -1,0 +1,304 @@
+# DEUK Agents Platform — Docker Compose Stack
+# See docs/00-vision-and-principles.md for architecture overview.
+# Usage: docker compose up -d
+# Teardown: docker compose down -v
+
+name: deuk-agents
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # Orchestrator — task queue, dispatch, state machine
+  # ─────────────────────────────────────────────────────────────
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: deuk-orchestrator
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    environment:
+      - DEUK_ENV=${DEUK_ENV:-local}
+      - DATABASE_URL=sqlite:///data/orchestrator.db
+      - GATEWAY_URL=http://gateway:7100
+      - AWS_REGION=eu-west-1
+      - AWS_DEFAULT_REGION=eu-west-1
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:?err}
+      - DAILY_BUDGET_USD=${DAILY_BUDGET_USD:-6.67}
+      - MONTHLY_BUDGET_USD=${MONTHLY_BUDGET_USD:-200}
+      - HARD_BUDGET_USD=${HARD_BUDGET_USD:-300}
+      - S3_AUDIT_BUCKET=${S3_AUDIT_BUCKET:-deuk-audit-local}
+    volumes:
+      - orchestrator-data:/data
+      - ./services/orchestrator/config:/config:ro
+    ports:
+      - "7001:7001"
+    networks:
+      - deuk-internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────────
+  # LLM Gateway — budget enforcement, model allowlist, scrubber
+  # ─────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: deuk-gateway
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+    environment:
+      - DEUK_ENV=${DEUK_ENV:-local}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:?err}
+      - GATEWAY_PORT=7100
+      - REQUIRE_NO_TRAINING_HEADERS=true
+      - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3.5-sonnet}
+      - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
+      - SCRUBBER_PATTERNS=${SCRUBBER_PATTERNS:-credit_card,ssn,api_key}
+    ports:
+      - "7100:7100"
+    networks:
+      - deuk-internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────
+  # Dashboard — Lustre SPA served by a tiny static server
+  # ─────────────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+    container_name: deuk-dashboard
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=20m
+    environment:
+      - DEUK_ENV=${DEUK_ENV:-local}
+      - ORCHESTRATOR_URL=http://orchestrator:7001
+      - DASHBOARD_PORT=7000
+    ports:
+      - "7000:7000"
+    networks:
+      - deuk-internal
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────
+  # Audit Shipper — jsonl → S3 (or local fs in dev)
+  # ─────────────────────────────────────────────────────────────
+  audit-shipper:
+    build:
+      context: ./services/audit-shipper
+      dockerfile: Dockerfile
+    container_name: deuk-audit-shipper
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+    environment:
+      - DEUK_ENV=${DEUK_ENV:-local}
+      - SINK_TYPE=${AUDIT_SINK_TYPE:-local}
+      - S3_BUCKET=${S3_AUDIT_BUCKET:-deuk-audit-local}
+      - AWS_REGION=eu-west-1
+      - LOCAL_SINK_DIR=/data/audit
+    volumes:
+      - audit-data:/data/audit
+    networks:
+      - deuk-internal
+    depends_on:
+      - orchestrator
+
+  # ─────────────────────────────────────────────────────────────
+  # OpenTelemetry Collector — traces/metrics batching
+  # ─────────────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: deuk-otel
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./services/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    networks:
+      - deuk-internal
+
+  # ─────────────────────────────────────────────────────────────
+  # Postgres — ephemeral task-local DB (dev only; staging/prod use Aurora)
+  # ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+    container_name: deuk-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      POSTGRES_USER: deuk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deuk-local-dev}
+      POSTGRES_DB: deuk
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - deuk-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deuk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  # Redis — lightweight queue / cache
+  # ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+    container_name: deuk-redis
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=50m
+    volumes:
+      - redis-data:/data
+    networks:
+      - deuk-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  # MCP Servers (one per tool domain)
+  # ─────────────────────────────────────────────────────────────
+  mcp-fs:
+    build:
+      context: ./services/mcp-servers/fs
+      dockerfile: Dockerfile
+    container_name: deuk-mcp-fs
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=20m
+    networks:
+      - deuk-internal
+
+  mcp-git:
+    build:
+      context: ./services/mcp-servers/git
+      dockerfile: Dockerfile
+    container_name: deuk-mcp-git
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=20m
+    networks:
+      - deuk-internal
+
+  mcp-gleam:
+    build:
+      context: ./services/mcp-servers/gleam
+      dockerfile: Dockerfile
+    container_name: deuk-mcp-gleam
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=20m
+    networks:
+      - deuk-internal
+
+  # ─────────────────────────────────────────────────────────────
+  # GitHub Actions Self-Hosted Runner (sandbox label)
+  # ─────────────────────────────────────────────────────────────
+  gh-runner:
+    build:
+      context: ./services/gh-runner
+      dockerfile: Dockerfile
+    container_name: deuk-gh-runner
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=200m
+    environment:
+      - RUNNER_NAME=${RUNNER_NAME:-deuk-laptop-sandbox}
+      - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,linux,x64,sandbox}
+      - GH_ORG=${GH_ORG:-deuk-agents}
+      - GH_REPO=${GH_REPO:-platform}
+      - GH_TOKEN=${GH_TOKEN:?err}
+      - EPHEMERAL=true
+    networks:
+      - deuk-internal
+
+networks:
+  deuk-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  orchestrator-data:
+  audit-data:
+  postgres-data:
+  redis-data:

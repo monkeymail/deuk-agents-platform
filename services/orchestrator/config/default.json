@@ -1,0 +1,16 @@
+{
+  "tiers": {
+    "orchestrator": { "maxWorkers": 1, "models": ["openai/gpt-4o"] },
+    "reviewer": { "maxWorkers": 2, "models": ["anthropic/claude-3.5-sonnet"] },
+    "worker": { "maxWorkers": 6, "models": ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"] },
+    "tester": { "maxWorkers": 3, "models": ["openai/gpt-4o-mini"] },
+    "scout": { "maxWorkers": 4, "models": ["openai/gpt-4o-mini"] }
+  },
+  "sandboxProfiles": {
+    "readonly-scout": { "network": "limited", "writablePaths": ["/tmp"] },
+    "default": { "network": "standard", "writablePaths": ["/workspace", "/cache"] },
+    "default-gleam": { "network": "gleam", "writablePaths": ["/workspace", "/cache"] },
+    "default-ts": { "network": "npm", "writablePaths": ["/workspace", "/cache"] },
+    "deploy-staging": { "network": "aws", "writablePaths": ["/workspace"] }
+  }
+}
