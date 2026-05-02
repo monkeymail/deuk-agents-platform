@@ -12,3 +12,6 @@ const TOOLS = {
 };
 
 console.log('[mcp-git] Started. Tools:', Object.keys(TOOLS).join(', '));
+
+// Keep process alive
+setInterval(() => {}, 60_000);

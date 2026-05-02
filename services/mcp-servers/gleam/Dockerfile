@@ -1,5 +1,5 @@
 # DEUK MCP — Gleam
-FROM node:22-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+FROM node:22-alpine
 
 WORKDIR /app
 COPY package.json ./

@@ -98,6 +98,9 @@ services:
       - ALL
     tmpfs:
       - /tmp:noexec,nosuid,size=20m
+      - /var/cache/nginx:noexec,nosuid,size=20m
+      - /var/log/nginx:noexec,nosuid,size=20m
+      - /var/run:noexec,nosuid,size=10m
     environment:
       - DEUK_ENV=${DEUK_ENV:-local}
       - ORCHESTRATOR_URL=http://orchestrator:7001
@@ -166,7 +169,7 @@ services:
   # Postgres — ephemeral task-local DB (dev only; staging/prod use Aurora)
   # ─────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+    image: postgres:16-alpine
     container_name: deuk-postgres
     restart: unless-stopped
     security_opt:
@@ -193,7 +196,7 @@ services:
   # Redis — lightweight queue / cache
   # ─────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+    image: redis:7-alpine
     container_name: deuk-redis
     restart: unless-stopped
     read_only: true

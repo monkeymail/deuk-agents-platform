@@ -1,7 +1,10 @@
 # DEUK Orchestrator — TypeScript/Node.js
-FROM node:22-alpine@sha256:71dccb7e32a925fd5f8c65eb46c7b5fc8f1e1e7c7e0b7e0e7c7e0b7e0e7c7e0b7
+FROM node:22-alpine
 
 WORKDIR /app
+
+# Install build deps for native modules (better-sqlite3)
+RUN apk add --no-cache python3 make g++
 
 # Install dependencies
 COPY package.json package-lock.json* ./
