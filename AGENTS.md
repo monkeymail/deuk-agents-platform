@@ -429,3 +429,97 @@ For human reviewers:
 ---
 
 **Questions?** Open an issue or ask in `#deuk-dev`.
+
+---
+
+## 16. Package Decisions (Don't Reinvent the Wheel)
+
+### 16.1 LLM Calls — Vercel AI SDK
+
+**Use `ai` (Vercel AI SDK) for all LLM interactions.** Do NOT hand-roll `fetch()` calls to OpenRouter or any other provider.
+
+```javascript
+// ✅ CORRECT — uses AI SDK with provider abstraction
+import { generateText } from 'ai';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+
+const openrouter = createOpenRouter({ apiKey: providerCfg.apiKey });
+const { text, usage } = await generateText({
+  model: openrouter.chat('deepseek/deepseek-v4-pro'),
+  system: 'You are a coding agent...',
+  prompt: 'Implement the feature',
+  tools: mcpTools,
+  maxSteps: 20,
+});
+
+// ❌ WRONG — hand-rolled fetch
+const res = await fetch('https://openrouter.ai/api/v1/chat/completions', { ... });
+```
+
+**Why:** AI SDK handles streaming, tool calling, usage tracking, retries, and provider normalization. Switching providers is a one-line change.
+
+**Packages:**
+- `ai` — core SDK (generateText, streamText, tool calling)
+- `@openrouter/ai-sdk-provider` — OpenRouter provider (default)
+- `@ai-sdk/openai` — OpenAI direct provider (fallback)
+- `@ai-sdk/anthropic` — Anthropic direct provider (fallback)
+
+### 16.2 MCP Client — @ai-sdk/mcp
+
+**Use `@ai-sdk/mcp` for connecting to MCP servers.** Do NOT hand-roll the stdio Content-Length framing protocol.
+
+```javascript
+// ✅ CORRECT
+import { createMCPClient } from '@ai-sdk/mcp';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+const client = await createMCPClient({
+  transport: new StdioClientTransport({ command: 'node', args: ['server.js'] }),
+});
+const tools = await client.tools(); // returns AI SDK-compatible tool definitions
+```
+
+**Why:** `@ai-sdk/mcp` returns tools in the exact format `generateText` expects. No manual JSON-RPC framing needed.
+
+### 16.3 Config Validation — Zod
+
+**Use `zod` for all schema validation.** All config, task schemas, and API inputs must be validated with Zod.
+
+```typescript
+// ✅ CORRECT
+import { parseConfig } from '@deuk/config';
+const cfg = parseConfig(process.env); // throws ZodError if invalid
+```
+
+### 16.4 Model Costs — Live from Provider API
+
+**Do NOT hardcode model costs.** Use `fetchModelPricing()` from `@deuk/config` to get live costs from the provider API. The gateway fetches and caches these on startup and every 6 hours. Workers can query `GET /models` on the gateway for current prices.
+
+```javascript
+// ✅ CORRECT — get live costs from gateway
+const res = await fetch(`${GATEWAY_URL}/models`);
+const { models } = await res.json();
+const cost = models.find(m => m.id === modelId);
+
+// ❌ WRONG — hardcoded
+const cost = { in: 0.003, out: 0.015 }; // stale immediately
+```
+
+### 16.5 HTTP Server — Express
+
+**Use `express` for HTTP services.** It's already in the stack and well-understood.
+
+### 16.6 SQLite — better-sqlite3
+
+**Use `better-sqlite3` for the orchestrator state store.** Synchronous API, WAL mode, zero config.
+
+### 16.7 What We Deliberately Don't Use
+
+| Category | Rejected | Reason |
+|----------|----------|--------|
+| LangChain | Too heavy, too many abstractions | AI SDK is simpler and more composable |
+| LlamaIndex | Same as LangChain | |
+| Prisma | Too heavy for SQLite | better-sqlite3 is sufficient |
+| Kubernetes | Overkill for single-operator | Docker Compose is enough |
+| Redis for queues | Not needed yet | SQLite + dispatch loop is sufficient |
+| gRPC | Overkill for internal comms | HTTP/JSON is fine |

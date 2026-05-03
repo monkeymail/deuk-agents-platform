@@ -1,37 +1,56 @@
 /**
- * DEUK Worker — Agent that executes tasks in a sandboxed container
- * Connects to: gateway (LLM calls), MCP servers (tools via stdio), orchestrator (reporting)
- * Uses centralized @deuk/config for all configuration.
+ * DEUK Worker — Autonomous agent executing tasks via Vercel AI SDK + ReAct loop
+ *
+ * Uses:
+ *   - @openrouter/ai-sdk-provider  — provider abstraction (swap to openai/anthropic via env)
+ *   - ai (Vercel AI SDK)           — generateText with tool calling, usage tracking
+ *   - @ai-sdk/mcp                  — MCP client (replaces hand-rolled stdio client)
+ *   - @modelcontextprotocol/sdk    — StdioClientTransport for local MCP servers
+ *
+ * Flow:
+ *   1. Clone repo → create feature branch
+ *   2. ReAct loop: generateText with tools → LLM picks tools → execute → observe → repeat
+ *   3. Commit → push branch → open PR via GitHub API
+ *   4. Report completion to orchestrator
  */
-import { spawn } from 'child_process';
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { execSync } from 'child_process';
+import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { generateText } from 'ai';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createMCPClient } from '@ai-sdk/mcp';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   DEFAULTS,
   parseConfig,
-  MODEL_COSTS,
+  FALLBACK_MODEL_COSTS,
   TIER_DEFAULT_MODEL,
+  getProviderConfig,
 } from '@deuk/config';
 
 const cfg = parseConfig(process.env);
+const providerCfg = getProviderConfig(cfg);
 
-// ─── Task Config ───
-const TASK_ID = process.env.TASK_ID || 'unknown';
-const REPO = process.env.TASK_REPO || '';
-const GOAL = process.env.TASK_GOAL || '';
-const TIER = process.env.TASK_TIER || 'worker';
-const PROFILE = process.env.TASK_PROFILE || 'default';
+// ─── Task Config ─────────────────────────────────────────────────────────────
+const TASK_ID    = process.env.TASK_ID    || 'unknown';
+const REPO       = process.env.TASK_REPO  || '';
+const GOAL       = process.env.TASK_GOAL  || '';
+const TIER       = process.env.TASK_TIER  || 'worker';
+const PROFILE    = process.env.TASK_PROFILE || 'default';
 const BUDGET_USD = parseFloat(process.env.TASK_BUDGET_USD || String(DEFAULTS.TASK_BUDGET_USD));
-const MODEL = process.env.TASK_MODEL || TIER_DEFAULT_MODEL[TIER] || TIER_DEFAULT_MODEL['worker'];
-const GATEWAY_URL = cfg.GATEWAY_URL;
-const ORCHESTRATOR_URL = cfg.ORCHESTRATOR_URL;
-const WORKSPACE = DEFAULTS.WORKSPACE;
+const MODEL_ID   = process.env.TASK_MODEL || TIER_DEFAULT_MODEL[TIER] || TIER_DEFAULT_MODEL['worker'];
+const WORKSPACE  = DEFAULTS.WORKSPACE;
+const GH_TOKEN   = process.env.GH_TOKEN || cfg.GH_TOKEN || '';
+const MAX_STEPS  = parseInt(process.env.MAX_REACT_STEPS || '20', 10);
 
-// ─── State ───
-let spentUsd = 0;
+// ─── State ───────────────────────────────────────────────────────────────────
+let spentUsd    = 0;
 let spentTokens = 0;
 const checkpointPath = join(WORKSPACE, '.deuk-checkpoint.json');
 
+// ─── Logging ─────────────────────────────────────────────────────────────────
 function log(event, data = {}) {
   console.log(JSON.stringify({
     ts: new Date().toISOString(),
@@ -43,307 +62,355 @@ function log(event, data = {}) {
   }));
 }
 
+// ─── Checkpoint ──────────────────────────────────────────────────────────────
 function saveCheckpoint(step, data = {}) {
-  writeFileSync(checkpointPath, JSON.stringify({ step, ...data, ts: Date.now() }));
+  try {
+    const existing = loadCheckpoint() || {};
+    writeFileSync(checkpointPath, JSON.stringify({ ...existing, step, ...data, ts: Date.now() }));
+  } catch { /* ignore */ }
 }
 
-// ─── MCP Client ───
-class MCPClient {
-  constructor(name, command, args = []) {
-    this.name = name;
-    this.command = command;
-    this.args = args;
-    this.proc = null;
-    this.reqId = 0;
-    this.pending = new Map();
-    this.tools = [];
-  }
-
-  async start() {
-    return new Promise((resolve, reject) => {
-      this.proc = spawn(this.command, this.args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      let buffer = '';
-      this.proc.stdout.on('data', (data) => {
-        buffer += data.toString();
-        while (true) {
-          const match = buffer.match(/^Content-Length: (\d+)\r\n\r\n/);
-          if (!match) break;
-          const len = parseInt(match[1], 10);
-          const headerLen = match[0].length;
-          if (buffer.length < headerLen + len) break;
-          const json = buffer.slice(headerLen, headerLen + len);
-          buffer = buffer.slice(headerLen + len);
-          try {
-            const msg = JSON.parse(json);
-            this.handleMessage(msg);
-          } catch (e) {
-            log('mcp.parse_error', { name: this.name, error: e.message });
-          }
-        }
-      });
-
-      this.proc.stderr.on('data', (data) => {
-        log('mcp.stderr', { name: this.name, data: data.toString().trim() });
-      });
-
-      this.proc.on('error', (err) => {
-        log('mcp.error', { name: this.name, error: err.message });
-        reject(err);
-      });
-
-      // Send initialize
-      this.sendRequest('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'deuk-worker', version: '0.2.0' } })
-        .then(() => this.sendRequest('tools/list', {}))
-        .then((res) => {
-          this.tools = res.tools || [];
-          log('mcp.ready', { name: this.name, tools: this.tools.map(t => t.name) });
-          resolve();
-        })
-        .catch(reject);
-    });
-  }
-
-  sendRequest(method, params) {
-    return new Promise((resolve, reject) => {
-      const id = ++this.reqId;
-      this.pending.set(id, { resolve, reject });
-      const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-      const payload = `Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`;
-      this.proc.stdin.write(payload);
-    });
-  }
-
-  handleMessage(msg) {
-    if (msg.id !== undefined && this.pending.has(msg.id)) {
-      const { resolve, reject } = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
-      if (msg.error) reject(new Error(msg.error.message));
-      else resolve(msg.result);
-    }
-  }
-
-  async callTool(name, args) {
-    return this.sendRequest('tools/call', { name, arguments: args });
-  }
-
-  stop() {
-    if (this.proc) this.proc.kill();
-  }
+function loadCheckpoint() {
+  if (!existsSync(checkpointPath)) return null;
+  try { return JSON.parse(readFileSync(checkpointPath, 'utf-8')); }
+  catch { return null; }
 }
 
-// ─── LLM Call via Gateway ───
-async function callLLM(messages, model) {
-  const estimatedCost = estimateCost(messages, model);
-  if (spentUsd + estimatedCost > BUDGET_USD) {
-    throw new Error(`Budget exceeded: ${spentUsd.toFixed(2)} + ${estimatedCost.toFixed(2)} > ${BUDGET_USD}`);
+// ─── Build AI SDK model instance ─────────────────────────────────────────────
+function buildModel() {
+  const { provider, apiKey, baseUrl } = providerCfg;
+
+  if (provider === 'openrouter') {
+    const openrouter = createOpenRouter({ apiKey, baseURL: baseUrl });
+    return openrouter.chat(MODEL_ID);
   }
-
-  log('llm.call', { model, estimated_cost: estimatedCost });
-
-  const res = await fetch(`${GATEWAY_URL}/api/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Agent-Token': TASK_ID,
-      'X-Tier': TIER,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: 4000,
-      temperature: 0.2,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    log('llm.error', { status: res.status, error: err });
-    throw new Error(`Gateway error: ${res.status} ${err}`);
+  if (provider === 'openai') {
+    const openai = createOpenAI({ apiKey, baseURL: baseUrl });
+    return openai(MODEL_ID);
   }
+  if (provider === 'anthropic') {
+    const anthropic = createAnthropic({ apiKey, baseURL: baseUrl });
+    return anthropic(MODEL_ID);
+  }
+  // custom — use openai-compatible
+  const openai = createOpenAI({ apiKey, baseURL: baseUrl });
+  return openai(MODEL_ID);
+}
 
-  const data = await res.json();
-  const usage = data.usage || {};
-  const cost = calculateCost(usage.prompt_tokens || 0, usage.completion_tokens || 0, model);
-  spentUsd += cost;
-  spentTokens += (usage.total_tokens || 0);
-
-  log('llm.response', {
-    model,
-    prompt_tokens: usage.prompt_tokens,
-    completion_tokens: usage.completion_tokens,
+// ─── Cost tracking ────────────────────────────────────────────────────────────
+function trackUsage(usage) {
+  if (!usage) return;
+  const costs = FALLBACK_MODEL_COSTS[MODEL_ID] || { in: 0.003, out: 0.015 };
+  const cost = ((usage.promptTokens || 0) / 1000) * costs.in
+             + ((usage.completionTokens || 0) / 1000) * costs.out;
+  spentUsd    += cost;
+  spentTokens += (usage.totalTokens || 0);
+  log('llm.usage', {
+    model: MODEL_ID,
+    prompt_tokens: usage.promptTokens,
+    completion_tokens: usage.completionTokens,
     cost_usd: cost,
     spent_usd: spentUsd,
   });
-
-  await reportSpend();
-
-  return data.choices?.[0]?.message?.content || '';
-}
-
-function estimateCost(messages, model) {
-  const totalChars = messages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  const estimatedTokens = totalChars / 4;
-  const rate = MODEL_COSTS[model]?.in || 0.003;
-  return (estimatedTokens / 1000) * rate;
-}
-
-function calculateCost(promptTokens, completionTokens, model) {
-  const rate = MODEL_COSTS[model] || { in: 0.003, out: 0.015 };
-  return (promptTokens / 1000) * rate.in + (completionTokens / 1000) * rate.out;
+  reportSpend().catch(() => {});
 }
 
 async function reportSpend() {
   try {
-    await fetch(`${ORCHESTRATOR_URL}/tasks/${TASK_ID}/spend`, {
+    await fetch(`${cfg.ORCHESTRATOR_URL}/tasks/${TASK_ID}/spend`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spent_usd: spentUsd, spent_tokens: spentTokens }),
     });
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 
-// ─── Main Worker Loop ───
-async function main() {
-  log('worker.started', { repo: REPO, goal: GOAL, tier: TIER, profile: PROFILE, budget: BUDGET_USD, model: MODEL });
-
-  if (!existsSync(WORKSPACE)) {
-    mkdirSync(WORKSPACE, { recursive: true });
+// ─── ReAct Loop via Vercel AI SDK ────────────────────────────────────────────
+async function runReActLoop(mcpTools) {
+  if (spentUsd >= BUDGET_USD) {
+    return { summary: `Budget exhausted ($${spentUsd.toFixed(4)})`, blocked: true };
   }
 
-  // Start MCP clients
-  const mcpFs = new MCPClient('fs', 'node', ['/app/node_modules/@deuk/mcp-fs/src/index.js']);
-  const mcpGit = new MCPClient('git', 'node', ['/app/node_modules/@deuk/mcp-git/src/index.js']);
+  const model = buildModel();
+
+  const systemPrompt = `You are a ${TIER} coding agent (task ${TASK_ID}).
+
+GOAL: ${GOAL}
+WORKSPACE: /workspace (repo cloned here)
+PROFILE: ${PROFILE}
+BUDGET: $${BUDGET_USD} USD (spent so far: $${spentUsd.toFixed(4)})
+
+You have filesystem and git tools. Use them to:
+1. Explore the repository (list_dir, read_file)
+2. Understand what needs to change
+3. Write changes (write_file)
+4. Verify with git_status and git_diff
+5. When done, say DONE: <one-line summary>
+
+Rules:
+- Explore before editing. Read relevant files first.
+- Make minimal, focused changes.
+- Write tests if the repo has a test directory.
+- Commit message format: "agent(${TASK_ID}): <what changed>"
+- If blocked, say BLOCKED: <reason>
+- Never expose secrets or credentials.`;
+
+  log('react.start', { model: MODEL_ID, max_steps: MAX_STEPS, tools: Object.keys(mcpTools) });
 
   try {
-    await mcpFs.start();
-    await mcpGit.start();
+    const result = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: 'Start by exploring the repository at /workspace, then implement the goal.',
+      tools: mcpTools,
+      maxSteps: MAX_STEPS,
+      onStepFinish: ({ usage, toolCalls, toolResults }) => {
+        trackUsage(usage);
+        if (toolCalls?.length) {
+          log('react.step', {
+            tools_called: toolCalls.map(tc => tc.toolName),
+            results: toolResults?.length,
+          });
+        }
+      },
+    });
+
+    const text = result.text || '';
+    if (text.includes('DONE:')) {
+      const summary = text.split('DONE:')[1]?.trim() || 'Task completed';
+      log('react.done', { summary: summary.slice(0, 200) });
+      return { summary, blocked: false };
+    }
+    if (text.includes('BLOCKED:')) {
+      const reason = text.split('BLOCKED:')[1]?.trim() || 'Unknown reason';
+      log('react.blocked', { reason });
+      return { summary: `BLOCKED: ${reason}`, blocked: true };
+    }
+
+    return { summary: result.text?.slice(0, 200) || 'Completed', blocked: false };
+  } catch (err) {
+    log('react.error', { error: err.message });
+    return { summary: `Error: ${err.message}`, blocked: false };
+  }
+}
+
+// ─── Git helpers ─────────────────────────────────────────────────────────────
+function gitExec(cmd, opts = {}) {
+  return execSync(cmd, { cwd: WORKSPACE, encoding: 'utf-8', timeout: 60000, ...opts });
+}
+
+function createFeatureBranch() {
+  const branch = `agent/${TASK_ID}/feature`;
+  try {
+    gitExec(`git checkout -b ${branch}`);
+    log('git.branch_created', { branch });
+  } catch {
+    try {
+      gitExec(`git checkout ${branch}`);
+      log('git.branch_switched', { branch });
+    } catch (e) {
+      log('git.branch_failed', { error: e.message });
+      return null;
+    }
+  }
+  return branch;
+}
+
+function commitChanges() {
+  try {
+    const status = gitExec('git status --short').trim();
+    if (!status) { log('git.nothing_to_commit'); return false; }
+    gitExec('git add -A');
+    const msg = `agent(${TASK_ID}): ${GOAL.slice(0, 72)}`;
+    gitExec(`git commit -m "${msg.replace(/"/g, '\\"')}"`);
+    log('git.committed', { files: status.split('\n').length });
+    return true;
+  } catch (err) {
+    log('git.commit_failed', { error: err.message });
+    return false;
+  }
+}
+
+async function pushBranch(branch) {
+  try {
+    if (GH_TOKEN && REPO) {
+      const remote = `https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git`;
+      gitExec(`git remote set-url origin ${remote}`);
+    }
+    gitExec(`git push -u origin ${branch}`);
+    log('git.pushed', { branch });
+    return true;
+  } catch (err) {
+    log('git.push_failed', { error: err.message });
+    return false;
+  }
+}
+
+async function openPullRequest(branch, summary) {
+  if (!GH_TOKEN || !REPO) {
+    log('pr.skipped', { reason: !GH_TOKEN ? 'no_gh_token' : 'no_repo' });
+    return null;
+  }
+  const title = `agent(${TASK_ID}): ${GOAL.slice(0, 80)}`;
+  const body = [
+    `## 🤖 Agent Task \`${TASK_ID}\``,
+    '',
+    `**Goal:** ${GOAL}`,
+    `**Tier:** ${TIER}  |  **Model:** ${MODEL_ID}  |  **Profile:** ${PROFILE}`,
+    `**Cost:** $${spentUsd.toFixed(4)} of $${BUDGET_USD} budget`,
+    `**Tokens:** ${spentTokens.toLocaleString()}`,
+    '',
+    '## Summary',
+    summary,
+    '',
+    '---',
+    '_Generated by DEUK agent platform. Review before merging._',
+  ].join('\n');
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/pulls`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GH_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ title, body, head: branch, base: 'main' }),
+    });
+    const data = await res.json();
+    if (!res.ok) { log('pr.failed', { status: res.status, error: data.message }); return null; }
+    log('pr.opened', { number: data.number, url: data.html_url });
+    return { number: data.number, url: data.html_url };
+  } catch (err) {
+    log('pr.error', { error: err.message });
+    return null;
+  }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+async function main() {
+  log('worker.started', {
+    repo: REPO, goal: GOAL, tier: TIER, profile: PROFILE,
+    budget: BUDGET_USD, model: MODEL_ID, provider: providerCfg.provider,
+  });
+
+  mkdirSync(WORKSPACE, { recursive: true });
+
+  // Start MCP servers via @ai-sdk/mcp + StdioClientTransport
+  let mcpTools = {};
+  const mcpClients = [];
+
+  try {
+    const fsClient = await createMCPClient({
+      transport: new StdioClientTransport({
+        command: 'node',
+        args: ['/app/mcp-servers/fs/src/index.js'],
+      }),
+    });
+    const gitClient = await createMCPClient({
+      transport: new StdioClientTransport({
+        command: 'node',
+        args: ['/app/mcp-servers/git/src/index.js'],
+      }),
+    });
+    mcpClients.push(fsClient, gitClient);
+
+    // Merge tools from both MCP servers
+    const [fsTools, gitTools] = await Promise.all([
+      fsClient.tools(),
+      gitClient.tools(),
+    ]);
+    mcpTools = { ...fsTools, ...gitTools };
+    log('mcp.ready', { tools: Object.keys(mcpTools) });
   } catch (err) {
     log('mcp.start_failed', { error: err.message });
-    // Continue with fallback local tools
   }
 
-  let step = 0;
-  if (existsSync(checkpointPath)) {
-    try {
-      const cp = JSON.parse(readFileSync(checkpointPath, 'utf-8'));
-      step = cp.step || 0;
-      log('worker.resume', { from_step: step });
-    } catch { /* ignore */ }
-  }
+  const cp = loadCheckpoint();
+  let step   = cp?.step || 0;
+  let branch = cp?.branch || null;
+  if (step > 0) log('worker.resume', { from_step: step });
 
   // Step 1: Clone repo
   if (step < 1 && REPO) {
-    log('worker.clone', { repo: REPO });
+    log('worker.step', { step: 1, name: 'clone' });
     try {
-      if (mcpGit.tools.find(t => t.name === 'git_clone')) {
-        await mcpGit.callTool('git_clone', { url: `https://github.com/${REPO}.git` });
-      } else {
-        const { execSync } = await import('child_process');
-        execSync(`git clone --depth 50 "https://github.com/${REPO}.git" .`, { cwd: WORKSPACE, timeout: 60000 });
-      }
+      gitExec(`git clone --depth 50 "https://github.com/${REPO}.git" .`);
+      gitExec('git config user.email "agent@deuk.local"');
+      gitExec('git config user.name "DEUK Agent"');
       saveCheckpoint(1, { cloned: REPO });
+      step = 1;
     } catch (err) {
       log('worker.clone_failed', { error: err.message });
     }
   }
 
-  // Step 2: Explore repo structure
+  // Step 2: Create feature branch
   if (step < 2) {
-    log('worker.explore');
-    try {
-      let files;
-      if (mcpFs.tools.find(t => t.name === 'list_dir')) {
-        const res = await mcpFs.callTool('list_dir', { path: '.' });
-        files = res.entries?.length || 0;
-      } else {
-        const { readdirSync } = await import('fs');
-        files = readdirSync(WORKSPACE).length;
-      }
-      saveCheckpoint(2, { files });
-    } catch (err) {
-      log('worker.explore_failed', { error: err.message });
-    }
+    log('worker.step', { step: 2, name: 'branch' });
+    branch = createFeatureBranch();
+    saveCheckpoint(2, { branch });
+    step = 2;
   }
 
-  // Step 3: Call LLM with task
+  // Step 3: ReAct loop
   if (step < 3) {
-    log('worker.plan');
-    try {
-      const prompt = `You are a ${TIER} agent working on task ${TASK_ID}.
-Goal: ${GOAL}
-Profile: ${PROFILE}
-Budget: $${BUDGET_USD}
-Model: ${MODEL}
-
-Please analyze the repository and provide a plan. Then implement the changes.
-Use the available tools to read files, write files, and use git.
-
-Respond with:
-1. A brief analysis of what needs to change
-2. The specific files to modify
-3. The implementation plan
-
-Then implement the changes and commit them.`;
-
-      const response = await callLLM([
-        { role: 'system', content: 'You are a helpful coding assistant. You work in a sandboxed environment at /workspace. You can read/write files and use git.' },
-        { role: 'user', content: prompt },
-      ], MODEL);
-
-      saveCheckpoint(3, { plan_generated: true, response_length: response.length });
-      log('worker.plan_complete', { response_length: response.length });
-    } catch (err) {
-      log('worker.plan_failed', { error: err.message });
-    }
+    log('worker.step', { step: 3, name: 'react_loop' });
+    const result = await runReActLoop(mcpTools);
+    saveCheckpoint(3, { react_summary: result.summary, react_blocked: result.blocked });
+    step = 3;
   }
 
-  // Step 4: Commit changes
+  // Step 4: Commit
   if (step < 4) {
-    log('worker.commit');
-    try {
-      let status;
-      if (mcpGit.tools.find(t => t.name === 'git_status')) {
-        const res = await mcpGit.callTool('git_status', { repo: '.' });
-        status = res.status;
-      } else {
-        const { execSync } = await import('child_process');
-        status = execSync('git status --short', { cwd: WORKSPACE, encoding: 'utf-8' }).trim() || 'clean';
-      }
-      if (status !== 'clean') {
-        if (mcpGit.tools.find(t => t.name === 'git_commit')) {
-          await mcpGit.callTool('git_commit', { repo: '.', message: `agent(${TASK_ID}): implement ${GOAL.slice(0, 50)}` });
-        } else {
-          const { execSync } = await import('child_process');
-          execSync('git add -A', { cwd: WORKSPACE });
-          execSync(`git commit -m "agent(${TASK_ID}): implement ${GOAL.slice(0, 50)}"`, { cwd: WORKSPACE });
-        }
-        saveCheckpoint(4, { committed: true });
-      }
-    } catch (err) {
-      log('worker.commit_failed', { error: err.message });
-    }
+    log('worker.step', { step: 4, name: 'commit' });
+    const committed = commitChanges();
+    saveCheckpoint(4, { committed });
+    step = 4;
+  }
+
+  // Step 5: Push
+  if (step < 5) {
+    log('worker.step', { step: 5, name: 'push' });
+    const pushed = branch ? await pushBranch(branch) : false;
+    saveCheckpoint(5, { pushed });
+    step = 5;
+  }
+
+  // Step 6: Open PR
+  if (step < 6) {
+    log('worker.step', { step: 6, name: 'open_pr' });
+    const finalCp = loadCheckpoint();
+    const summary = finalCp?.react_summary || GOAL;
+    const pr = branch ? await openPullRequest(branch, summary) : null;
+    saveCheckpoint(6, { pr });
   }
 
   // Cleanup MCP clients
-  mcpFs.stop();
-  mcpGit.stop();
+  for (const client of mcpClients) {
+    try { await client.close(); } catch { /* ignore */ }
+  }
 
-  // Report completion
-  log('worker.done', { spent_usd: spentUsd, spent_tokens: spentTokens });
+  log('worker.done', { spent_usd: spentUsd, spent_tokens: spentTokens, branch });
 
   try {
-    await fetch(`${ORCHESTRATOR_URL}/tasks/${TASK_ID}/complete`, {
+    const finalCp = loadCheckpoint();
+    await fetch(`${cfg.ORCHESTRATOR_URL}/tasks/${TASK_ID}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ spent_usd: spentUsd, spent_tokens: spentTokens, summary: `Completed task ${TASK_ID}` }),
+      body: JSON.stringify({
+        spent_usd:    spentUsd,
+        spent_tokens: spentTokens,
+        summary:      finalCp?.react_summary || `Completed task ${TASK_ID}`,
+        branch,
+        pr:           finalCp?.pr || null,
+      }),
     });
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 
 main().catch(err => {
-  log('worker.fatal', { error: err.message });
+  log('worker.fatal', { error: err.message, stack: err.stack?.slice(0, 500) });
   process.exit(1);
 });

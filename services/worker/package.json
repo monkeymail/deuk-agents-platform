@@ -1,13 +1,19 @@
 {
   "name": "@deuk/worker",
-  "version": "0.1.0",
-  "description": "DEUK Worker — agent that executes tasks in sandbox",
+  "version": "0.3.0",
+  "description": "DEUK Worker — autonomous agent executing tasks via Vercel AI SDK + ReAct loop",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
+    "ai": "^4.3.0",
+    "@openrouter/ai-sdk-provider": "^0.4.0",
+    "@ai-sdk/openai": "^1.3.0",
+    "@ai-sdk/anthropic": "^1.2.0",
+    "@ai-sdk/mcp": "^0.2.0",
+    "@modelcontextprotocol/sdk": "^1.10.0",
     "zod": "^3.23.8"
   },
   "engines": {

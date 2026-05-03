@@ -29,6 +29,8 @@ services:
       - AWS_REGION=eu-west-1
       - AWS_DEFAULT_REGION=eu-west-1
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DEUK_LLM_PROVIDER=${DEUK_LLM_PROVIDER:-openrouter}
+      - DEUK_LLM_BASE_URL=${DEUK_LLM_BASE_URL:-}
       - DAILY_BUDGET_USD=${DAILY_BUDGET_USD:-6.67}
       - MONTHLY_BUDGET_USD=${MONTHLY_BUDGET_USD:-200}
       - HARD_BUDGET_USD=${HARD_BUDGET_USD:-300}
@@ -67,9 +69,11 @@ services:
     environment:
       - DEUK_ENV=${DEUK_ENV:-local}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DEUK_LLM_PROVIDER=${DEUK_LLM_PROVIDER:-openrouter}
+      - DEUK_LLM_BASE_URL=${DEUK_LLM_BASE_URL:-}
       - GATEWAY_PORT=7100
       - REQUIRE_NO_TRAINING_HEADERS=true
-      - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4.1,openai/gpt-4.1-mini,openai/gpt-4.1-nano,openai/gpt-4o,anthropic/claude-sonnet-4-20250514,anthropic/claude-opus-4-20250514,google/gemini-2.5-pro-preview-03-25}
+      - ALLOWED_MODELS=${ALLOWED_MODELS:-openai/gpt-4.1,openai/gpt-4.1-mini,openai/gpt-4.1-nano,openai/gpt-4o,anthropic/claude-sonnet-4.6,anthropic/claude-opus-4.7,deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,google/gemini-2.5-flash,openai/gpt-4.1-mini}
       - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
       - SCRUBBER_PATTERNS=${SCRUBBER_PATTERNS:-credit_card,ssn,api_key}
     ports:
